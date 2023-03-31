@@ -20,6 +20,7 @@
 #include "LPC214x.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "serial.h"
 #include "lcd.h"
@@ -62,18 +63,19 @@ static char* format_about = \
 
 static char* help_text = \
 "\nT-962-controller serial interface.\n\n" \
-" about                   Show about + debug information\n" \
-" bake <setpoint>         Enter Bake mode with setpoint\n" \
-" bake <setpoint> <time>  Enter Bake mode with setpoint for <time> seconds\n" \
-" help                    Display help text\n" \
-" list profiles           List available reflow profiles\n" \
-" list settings           List machine settings\n" \
-" quiet                   No logging in standby mode\n" \
-" reflow                  Start reflow with selected profile\n" \
-" setting <id> <value>    Set setting id to value\n" \
-" select profile <id>     Select reflow profile by id\n" \
-" stop                    Exit reflow or bake mode\n" \
-" values                  Dump currently measured values\n" \
+" about                      Show about + debug information\n" \
+" bake <setpoint>            Enter Bake mode with setpoint\n" \
+" bake <setpoint> <time>     Enter Bake mode with setpoint for <time> seconds\n" \
+" help                       Display help text\n" \
+" list profiles              List available reflow profiles\n" \
+" list settings              List machine settings\n" \
+" quiet                      No logging in standby mode\n" \
+" reflow                     Start reflow with selected profile\n" \
+" setting <id> <value>       Set setting id to value\n" \
+" select profile <id>        Select reflow profile by id\n" \
+" stop                       Exit reflow or bake mode\n" \
+" values                     Dump currently measured values\n" \
+" profile_set <id> <values>  Set values for a custom profile.  <id> is 1 or 2.  <values> is a comma separated list of 48 temperatures"
 "\n";
 
 static int32_t Main_Work(void);
@@ -158,6 +160,32 @@ typedef enum eMainMode {
 	MAIN_REFLOW
 } MainMode_t;
 
+
+int uart_readline_nonblocking(char* buffer, int *idx,int max_len) {
+	int i = *idx;
+	int endLine = 0;
+
+	while (uart_isrxready()) {
+		buffer[i] = uart_readc();
+		printf("%c",buffer[i]);
+		if (buffer[i] == '\r' || i >= max_len) {
+			endLine = 1;
+			break;
+		}
+		i++;
+	}
+
+	buffer[i] = '\0';
+	if(endLine){
+		*idx = 0;
+		return i;
+	}
+	else{
+		*idx = i;
+		return 0;
+	}
+}
+
 static int32_t Main_Work(void) {
 	static MainMode_t mode = MAIN_HOME;
 	static uint16_t setpoint = 0;
@@ -178,14 +206,18 @@ static int32_t Main_Work(void) {
 
 	uint32_t keyspressed = Keypad_Get();
 
-	char serial_cmd[255] = "";
+	static char serial_cmd[255] = "";
+	static int serial_idx = 0;
 	char* cmd_select_profile = "select profile %d";
 	char* cmd_bake = "bake %d %d";
 	char* cmd_dump_profile = "dump profile %d";
 	char* cmd_setting = "setting %d %f";
 
 	if (uart_isrxready()) {
-		int len = uart_readline(serial_cmd, 255);
+		int len = uart_readline_nonblocking(serial_cmd,&serial_idx,255);
+//		printf("string: %s, len: %i\n",serial_cmd,len);
+//		int len = uart_readline(&serial_ptr, 255);
+//		printf("strlen: %i\n",strlen(serial_cmd));
 
 		if (len > 0) {
 			int param, param1;
@@ -278,8 +310,22 @@ static int32_t Main_Work(void) {
 				Setup_setRealValue(param, paramF);
 				printf("\nAdjusted setting: ");
 				Setup_printFormattedValue(param);
-
-			} else {
+			} else if (sscanf(serial_cmd,"profile_set %d %n",&param,&param1)) {
+				printf("\nset profile %i\n",param);
+				Reflow_SelectEEProfileIdx(param1);
+				int elem_cnt = 0;
+				char *stok = strtok(&serial_cmd[param1],",");
+				while(stok!=NULL && elem_cnt < 48){
+					printf("elem: %i=%i\n",elem_cnt,atoi(stok));
+					Reflow_SetSetpointAtIdx(elem_cnt,atoi(stok));
+					elem_cnt+=1;
+					stok = strtok(NULL,",");
+				}
+				if (elem_cnt == 48)
+					Reflow_SaveEEProfile();
+				else
+					printf("\nNot enough array elements for profile\n");
+			}else {
 				printf("\nCannot understand command, ? for help\n");
 			}
 		}
